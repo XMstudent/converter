@@ -195,7 +195,6 @@ func (t *Table2Struct) Run() error {
 				tab(depth), tableRealName)
 			structContent += "}\n\n"
 		}
-		fmt.Println(structContent)
 	}
 
 	// 如果有引入 time.Time, 则需要引入 time 包
@@ -238,19 +237,22 @@ func (t *Table2Struct) dialMysql() {
 }
 
 type column struct {
-	ColumnName    string
-	Type          string
-	Nullable      string
-	TableName     string
-	ColumnComment string
-	Tag           string
+	ColumnName       string
+	Type             string
+	DataType         string
+	CharacterLength  interface{}
+	NumericPrecision interface{}
+	Nullable         string
+	TableName        string
+	ColumnComment    string
+	Tag              string
 }
 
 // Function for fetching schema definition of passed table
 func (t *Table2Struct) getColumns(table ...string) (tableColumns map[string][]column, err error) {
 	tableColumns = make(map[string][]column)
 	// sql
-	var sqlStr = `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE,TABLE_NAME,COLUMN_COMMENT
+	var sqlStr = `SELECT COLUMN_NAME,DATA_TYPE,DATA_TYPE,CHARACTER_MAXIMUM_LENGTH,(NUMERIC_PRECISION+1),IS_NULLABLE,TABLE_NAME,COLUMN_COMMENT
 		FROM information_schema.COLUMNS 
 		WHERE table_schema = DATABASE()`
 	// 是否指定了具体的table
@@ -270,7 +272,7 @@ func (t *Table2Struct) getColumns(table ...string) (tableColumns map[string][]co
 
 	for rows.Next() {
 		col := column{}
-		err = rows.Scan(&col.ColumnName, &col.Type, &col.Nullable, &col.TableName, &col.ColumnComment)
+		err = rows.Scan(&col.ColumnName, &col.Type, &col.DataType, &col.CharacterLength, &col.NumericPrecision, &col.Nullable, &col.TableName, &col.ColumnComment)
 
 		if err != nil {
 			fmt.Println(err.Error())
@@ -278,10 +280,27 @@ func (t *Table2Struct) getColumns(table ...string) (tableColumns map[string][]co
 		}
 
 		//col.Json = strings.ToLower(col.ColumnName)
-		col.Tag = col.ColumnName
+		var length []byte
+		if col.CharacterLength != nil{
+			length = col.CharacterLength.([]byte)
+		}else{
+			if col.NumericPrecision !=nil{
+				length = col.NumericPrecision.([]byte)
+			}else{
+				length = []byte{}
+			}
+		}
+
 		col.ColumnComment = col.ColumnComment
-		col.ColumnName = t.camelCase(col.ColumnName)
 		col.Type = typeForMysqlToGo[col.Type]
+		if col.Type == "int" ||
+			col.Type == "string"||
+			col.Type == "int64"{
+			col.Tag = fmt.Sprintf("%s(%s) '%s'",col.DataType,length,col.ColumnName)
+		}else{
+			col.Tag = fmt.Sprintf("%s '%s'",col.DataType,col.ColumnName)
+		}
+		col.ColumnName = t.camelCase(col.ColumnName)
 		jsonTag := col.Tag
 		// 字段首字母本身大写, 是否需要删除tag
 		if t.config.RmTagIfUcFirsted &&
@@ -290,12 +309,12 @@ func (t *Table2Struct) getColumns(table ...string) (tableColumns map[string][]co
 		} else {
 			// 是否需要将tag转换成小写
 			if t.config.TagToLower {
-				col.Tag = strings.ToLower(col.Tag)
+				col.Tag = strings.ToLower(col.ColumnName)
 				jsonTag = col.Tag
 			}
 
 			if t.config.JsonTagToHump {
-				jsonTag = t.camelCase(jsonTag)
+				jsonTag = t.JsonCamelCase(col.ColumnName)
 			}
 
 			//if col.Nullable == "YES" {
@@ -303,6 +322,7 @@ func (t *Table2Struct) getColumns(table ...string) (tableColumns map[string][]co
 			//} else {
 			//}
 		}
+
 		if t.tagKey == "" {
 			t.tagKey = "orm"
 		}
@@ -344,6 +364,31 @@ func (t *Table2Struct) camelCase(str string) string {
 		}
 	}
 	return text
+}
+
+func (t *Table2Struct) JsonCamelCase(str string) string {
+	// 是否有表前缀, 设置了就先去除表前缀
+	if t.prefix != "" {
+		str = strings.Replace(str, t.prefix, "", 1)
+	}
+	var text string
+	//for _, p := range strings.Split(name, "_") {
+	for _, p := range strings.Split(str, "_") {
+		// 字段首字母大写的同时, 是否要把其他字母转换为小写
+		switch len(p) {
+		case 0:
+		case 1:
+			text += strings.ToUpper(p[0:1])
+		default:
+			// 字符长度大于1时
+			if t.config.UcFirstOnly == true {
+				text += strings.ToUpper(p[0:1]) + strings.ToLower(p[1:])
+			} else {
+				text += strings.ToUpper(p[0:1]) + p[1:]
+			}
+		}
+	}
+	return strings.ToLower(text[0:1]) + text[1:]
 }
 func tab(depth int) string {
 	return strings.Repeat("\t", depth)
